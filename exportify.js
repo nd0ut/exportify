@@ -410,14 +410,15 @@ var PlaylistExporter = {
     return Helpers.fetchFullTracks(access_token, playlist)
       .then(function(trackItems) {
           var tracks = trackItems.map(function(trackItem) {
+
+            var artistGenres = trackItem.track.artists.map(function(artist) { return artist.genres });
+
             return [
               trackItem.track.uri,
               trackItem.track.name,
-
-              trackItem.track.artists.map(function(artist) {
-                return artist.name + ' (genres: ' +  (artist.genres.join(', ') || 'no data') + '; popularity: ' + artist.popularity + ')'
-              }).join(', '),
-
+              trackItem.track.artists.map(function(artist) { return artist.name }).join(', '),
+              artistGenres.filter(function(genres) { return genres.length }).length ? artistGenres.map(function(genres) { return genres.join(', ')}).join('; ') : '',
+              trackItem.track.artists.map(function(artist) { return artist.popularity }).join(', '),
               trackItem.track.album.name,
               trackItem.track.album.album_type,
               trackItem.track.album.artists.map(function(artist) {return artist.name}).join(', '),
@@ -436,7 +437,9 @@ var PlaylistExporter = {
           tracks.unshift([
             "Spotify URI",
             "Track Name",
-            "Artists",
+            "Artist Names",
+            "Artist Genres",
+            "Artist Popularity",
             "Album Name",
             "Album Type",
             "Album Artists",
