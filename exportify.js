@@ -400,7 +400,6 @@ var PlaylistsExporter = {
 // Handles exporting a single playlist as a CSV file
 var PlaylistExporter = {
   export: function(access_token, playlist) {
-    console.log('access_token', access_token);
     this.csvData(access_token, playlist).then(function(data) {
       var blob = new Blob(["\uFEFF" + data], { type: "text/csv;charset=utf-8" });
       saveAs(blob, this.fileName(playlist));
