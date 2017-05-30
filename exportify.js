@@ -40,8 +40,120 @@ window.Helpers = {
         alert(jqXHR.responseText);
       }
     })
+  },
+
+  getTracksRequests: function(url, total, access_token) {
+    limit = 100;
+    var requests = [];
+
+    for (var offset = 0; offset < total; offset = offset + limit) {
+      requests.push(
+        window.Helpers.apiCall(url + '?offset=' + offset + '&limit=' + limit, access_token)
+      )
+    }
+    return requests;
+  },
+
+  getAlbumsRequests: function(ids, access_token) {
+    limit = 20;
+    var requests = [];
+
+    for (var id = 0; id < ids.length; id = id + limit) {
+      var subIds = ids.slice(id, id + limit);
+      requests.push(
+        window.Helpers.apiCall('https://api.spotify.com/v1/albums' + '?ids=' + subIds.join(','), access_token)
+      )
+    }
+
+    return requests;
+  },
+
+  getArtistsRequests: function(ids, access_token) {
+    limit = 50;
+    var requests = [];
+
+    for (var id = 0; id < ids.length; id = id + limit) {
+      var subIds = ids.slice(id, id + limit);
+      requests.push(
+        window.Helpers.apiCall('https://api.spotify.com/v1/artists' + '?ids=' + subIds.join(','), access_token)
+      )
+    }
+
+    return requests;
+  },
+
+  fetchRequests: function(requests) {
+    return $.when.apply($, requests).then(function() {
+      var responses = Array.from(arguments).slice(0, requests.length);
+
+      // Handle either single or multiple responses
+      if (typeof responses[0] != 'undefined') {
+        if (Array.isArray(responses[0])) {
+          responses = Array.prototype.slice.call(responses).map(function(a) { return a[0] });
+        } else {
+          responses = [responses[0]];
+        }
+      }
+
+      return responses;
+    });
+  },
+
+  fetchFullTracks: function(access_token, playlist) {
+    var tracksRequests = Helpers.getTracksRequests(playlist.tracks.href.split('?')[0], playlist.tracks.total, access_token);
+
+    return Helpers.fetchRequests(tracksRequests)
+      .then(function(responses) {
+        var trackItems = responses.map(function(response) { return response.items });
+        trackItems = $.map(trackItems, function(n) { return n });
+        return trackItems;
+      })
+      .then(function(trackItems) {
+        var albumsIds = trackItems.map(function(trackItem) {return trackItem.track.album.id});
+        var albumsRequests = Helpers.getAlbumsRequests(albumsIds, access_token);
+        return Helpers.fetchRequests(albumsRequests)
+          .then(function(responses) {
+            var albums = responses.map(function(response) { return response.albums });
+            albums = $.map(albums, function(n) { return n });
+            return {trackItems: trackItems, albums: albums};
+          })
+      })
+      .then(function(obj) {
+        var trackItems = obj.trackItems;
+        var artistsIds = trackItems.map(function(trackItem) { return trackItem.track.artists.map(function(artist) { return artist.id })});
+        artistsIds = $.map(artistsIds, function(n) { return n });
+
+        var artistsRequests = Helpers.getArtistsRequests(artistsIds, access_token);
+        return Helpers.fetchRequests(artistsRequests)
+          .then(function(responses) {
+            var artists = responses.map(function(response) { return response.artists });
+            artists = $.map(artists, function(n) { return n });
+            return {trackItems: trackItems, albums: obj.albums, artists: artists};
+          })
+      })
+      .then(function(obj) {
+        var trackItems = obj.trackItems;
+        var allAlbums = obj.albums;
+        var allArtists = obj.artists;
+
+        trackItems = trackItems.map(function(trackItem) {
+          var album = allAlbums.find(function(album) { return album.id === trackItem.track.album.id });
+          trackItem.track.album = album;
+          return trackItem;
+        });
+
+        trackItems = trackItems.map(function(trackItem) {
+          var trackArtistIds = trackItem.track.artists.map(function(artist) { return artist.id });
+          var artists = allArtists.filter(function(artist) { return trackArtistIds.includes(artist.id) });
+          trackItem.track.artists = artists;
+          return trackItem;
+        });
+
+        return trackItems;
+      });
   }
 }
+
 
 var PlaylistTable = React.createClass({
   getInitialState: function() {
@@ -288,6 +400,7 @@ var PlaylistsExporter = {
 // Handles exporting a single playlist as a CSV file
 var PlaylistExporter = {
   export: function(access_token, playlist) {
+    console.log('access_token', access_token);
     this.csvData(access_token, playlist).then(function(data) {
       var blob = new Blob(["\uFEFF" + data], { type: "text/csv;charset=utf-8" });
       saveAs(blob, this.fileName(playlist));
@@ -295,66 +408,58 @@ var PlaylistExporter = {
   },
 
   csvData: function(access_token, playlist) {
-    var requests = [];
-    var limit = 100;
+    return Helpers.fetchFullTracks(access_token, playlist)
+      .then(function(trackItems) {
+          var tracks = trackItems.map(function(trackItem) {
+            return [
+              trackItem.track.uri,
+              trackItem.track.name,
 
-    for (var offset = 0; offset < playlist.tracks.total; offset = offset + limit) {
-      requests.push(
-        window.Helpers.apiCall(playlist.tracks.href.split('?')[0] + '?offset=' + offset + '&limit=' + limit, access_token)
-      )
-    }
+              trackItem.track.artists.map(function(artist) {
+                return artist.name + ' (genres: ' +  (artist.genres.join(', ') || 'no data') + '; popularity: ' + artist.popularity + ')'
+              }).join(', '),
 
-    return $.when.apply($, requests).then(function() {
-      var responses = [];
+              trackItem.track.album.name,
+              trackItem.track.album.album_type,
+              trackItem.track.album.artists.map(function(artist) {return artist.name}).join(', '),
+              trackItem.track.album.genres.join(', '),
+              trackItem.track.album.popularity,
+              trackItem.track.album.release_date,
+              trackItem.track.album.release_date_precision,
+              trackItem.track.disc_number,
+              trackItem.track.track_number,
+              trackItem.track.duration_ms,
+              trackItem.added_by == null ? '' : trackItem.added_by.uri,
+              trackItem.added_at
+            ].map(function(track) { return '"' + String(track).replace(/"/g, '""') + '"'; })
+           });
 
-      // Handle either single or multiple responses
-      if (typeof arguments[0] != 'undefined') {
-        if (typeof arguments[0].href == 'undefined') {
-          responses = Array.prototype.slice.call(arguments).map(function(a) { return a[0] });
-        } else {
-          responses = [arguments[0]];
-        }
-      }
+          tracks.unshift([
+            "Spotify URI",
+            "Track Name",
+            "Artists",
+            "Album Name",
+            "Album Type",
+            "Album Artists",
+            "Album Genres",
+            "Album Popularity",
+            "Album Release Date",
+            "Album Release Date Precision",
+            "Disc Number",
+            "Track Number",
+            "Track Duration (ms)",
+            "Added By",
+            "Added At"
+          ]);
 
-      var tracks = responses.map(function(response) {
-        return response.items.map(function(item) {
-          return [
-            item.track.uri,
-            item.track.name,
-            item.track.artists.map(function(artist) { return artist.name }).join(', '),
-            item.track.album.name,
-            item.track.disc_number,
-            item.track.track_number,
-            item.track.duration_ms,
-            item.added_by == null ? '' : item.added_by.uri,
-            item.added_at
-          ].map(function(track) { return '"' + track + '"'; })
-        });
-      });
+          csvContent = '';
+          tracks.forEach(function(infoArray, index){
+            dataString = infoArray.join(",");
+            csvContent += index < tracks.length ? dataString+ "\n" : dataString;
+          });
 
-      // Flatten the array of pages
-      tracks = $.map(tracks, function(n) { return n })
-
-      tracks.unshift([
-        "Spotify URI",
-        "Track Name",
-        "Artist Name",
-        "Album Name",
-        "Disc Number",
-        "Track Number",
-        "Track Duration (ms)",
-        "Added By",
-        "Added At"
-      ]);
-
-      csvContent = '';
-      tracks.forEach(function(infoArray, index){
-        dataString = infoArray.join(",");
-        csvContent += index < tracks.length ? dataString+ "\n" : dataString;
-      });
-
-      return csvContent;
-    });
+          return csvContent;
+      })
   },
 
   fileName: function(playlist) {
